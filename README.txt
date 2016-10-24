@@ -1,7 +1,7 @@
 To execute:
 
-ocamlc -o myprog -I +compiler-libs ocamlcommon.cma parseToAST.ml; ./myprog
+ocamlc -o {name-of-prog} -I +compiler-libs ocamlcommon.cma str.cma parseToAST.ml; ./{name-of-prog} {ocaml-file-to-translate}
 
 Parsetree visualization:
 
-ocamlc -dparsetree exampletranslate.ml
+ocamlc -dparsetree {ocaml-file}
