@@ -1,6 +1,6 @@
 To execute:
 
-ocamlc -o myprog -I +compiler-libs ocamlcommon.cma parseToAST.ml exampletranslate.ml; ./myprog
+ocamlc -o myprog -I +compiler-libs ocamlcommon.cma parseToAST.ml; ./myprog
 
 Parsetree visualization:
 

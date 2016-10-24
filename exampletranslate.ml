@@ -1,4 +1,4 @@
-let rec factorial n z =
+(*let rec factorial n z =
 match n with | 0|1 -> 1 
 | _ -> let x = factorial (n - 1) z in n * x
 ;;
@@ -41,3 +41,40 @@ let rec hh f =
 let xed = let _ = (3, 3) in 2;;
 
 let zed = ();;
+
+let yo () = ();;
+
+let zkz = function
+| 3 -> "hi"
+| _ -> "no"
+;;
+
+(function x -> function
+| 3 ->
+x + 1);;
+
+
+type bst_t =  
+  | Leaf
+  | Node of bst_t * int * bst_t
+
+let ff z = match z with
+| Leaf -> 1
+| Node (bst1, i, bst2) -> 2
+;;
+
+let x = ref "" in x := !x;;
+
+let x =
+  assert true;;
+
+true && false || true && not false;;
+
+type bst_t =  
+  | Leaf
+  | Node of bst_t * int * bst_t
+
+let x = Node (Leaf, 3, Node (Leaf, 2, Leaf));;*)
+
+
+(*note that curried functions in general will not work under this implementation*)
