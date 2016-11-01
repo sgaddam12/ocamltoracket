@@ -17,6 +17,14 @@ let read_sig filename =
 	close_in handle ;
 	ast;;
 
+let funcs = ref [];;
+
+let funcAdder s = 
+	if (not (List.mem s !funcs)) then funcs := (s::!funcs);;
+
+let funcPrint () =
+	List.iter (fun s -> print_string (s ^ "\n")) !funcs;;
+
 let locError {loc_start = {pos_fname = fnamestart; pos_lnum = lnumstart; pos_bol = bolstart; pos_cnum = cnumstart;};
 				loc_end = {pos_fname = fnameend; pos_lnum = lnumend; pos_bol = bolend; pos_cnum = cnumend;};
 				loc_ghost = ghostbool;} =
@@ -38,13 +46,18 @@ let rec patternDescMatcher patterndesc loc =
 	| Ppat_or (patt1, patt2) -> "(or " ^ (patternMatcher patt1 loc) ^ " " ^ (patternMatcher patt2 loc) ^ ") "
 	| Ppat_constant const -> (constantMatcher const loc)
 	| Ppat_any -> "_ "
-	| Ppat_tuple explist -> "(list " ^ (List.fold_right (fun a b -> (patternMatcher a loc) ^ " " ^ b) explist "") ^ ")"
+	| Ppat_tuple explist -> "(ocamltuple (list " ^ (List.fold_right (fun a b -> (patternMatcher a loc) ^ " " ^ b) explist "") ^ "))"
 	| Ppat_construct ({txt = Lident "::"; loc = newloc;}, _) | Ppat_construct ({txt = Lident "[]"; loc = newloc;}, _) -> 
 		"(list " ^ (listPatternMatcher patterndesc newloc) ^ ")"
 	| Ppat_construct ({txt = Lident "()"; loc = newloc;}, None) -> "void"
+	| Ppat_construct ({txt = Lident typ; loc = newloc;}, None) -> typ
 	| Ppat_construct ({txt = Lident typ; loc = newloc;}, opt) -> "(" ^ typ ^ " " ^ (typeArgumentMatcher loc opt) ^ ")"
 	| _ -> print_string "Pattern description matcher failed.\n"; locError loc
-and varConverter s =
+and varConverter s = 
+	let s = (match s with
+		| "eval" -> "eval'"	
+		| "pi" -> "pi'"
+		| _ -> s) in
 	Str.global_replace (Str.regexp "\'") "tick" s
 and typeArgumentMatcher loc = function
 	| Some {ppat_desc = pdesc; ppat_loc = loc1; ppat_attributes = ppatattr;} ->
@@ -70,12 +83,20 @@ and patternMatcher pattern loc =
 	match pattern with
 	| {ppat_desc = pdesc; ppat_loc = loc1; ppat_attributes = ppatattr;} ->
 		patternDescMatcher pdesc loc1
+and caseListFunctionMatcher caselist loc = 
+	match caselist with
+	| {pc_lhs = pclhs; pc_guard = pcguard; pc_rhs = pcrhs;}::casetl -> 
+		let pcstring = 
+		(match pcguard with
+		| Some exp -> " #:when " ^ expressionMatcher exp loc
+		| None -> "") in 
+		"\n[(" ^ (patternMatcher pclhs loc) ^ ")" ^ pcstring ^ " " ^ (expressionMatcher pcrhs loc) ^ " ] "
+		^ (caseListFunctionMatcher casetl loc)
+	| [] -> ""
 and expressionDescMatcher expressiondesc loc =
 	match expressiondesc with
-	| Pexp_function ({pc_lhs = pclhs; pc_guard = pcguard; pc_rhs = pcrhs;}::[]) -> 
-		expressionDescMatcher (Pexp_fun ("", None, pclhs, pcrhs)) loc;
-	| Pexp_function _ -> 
-		print_string "Pexp_function should not have reached here. 'function' matches are done in pexpfunMatcher.\n"; locError loc
+	| Pexp_function caselist -> 
+		"(match-lambda** " ^ (caseListFunctionMatcher caselist loc) ^ ")"
 	| Pexp_fun (arglabel, expressionopt, pattern, expression) -> 
 		let (args, resultExpression) = pexpfunMatcher expressiondesc loc
 		in "(match-lambda** [(" ^ args ^ ") " ^ resultExpression ^ "])"
@@ -84,7 +105,7 @@ and expressionDescMatcher expressiondesc loc =
 	| Pexp_constant const -> constantMatcher const loc
 	| Pexp_let (recflag, valuebindings, exp) -> letMatcher expressiondesc loc
 	| Pexp_apply (exp1, explist) -> applyMatcher expressiondesc loc
-	| Pexp_tuple explist -> tupleMatcher expressiondesc loc
+	| Pexp_tuple explist -> "(ocamltuple (list " ^ (List.fold_right (fun a b -> (expressionMatcher a loc) ^ " " ^ b) explist "") ^ "))"
 	| Pexp_construct ({txt = Lident "::"; loc = newloc;}, _) ->  
 		listMatcher expressiondesc newloc
 	| Pexp_construct ({txt = Lident "[]"; loc = newloc;}, _) ->
@@ -92,20 +113,29 @@ and expressionDescMatcher expressiondesc loc =
 	| Pexp_ifthenelse (exp1, exp2, expopt) ->
 		(match expopt with 
 		| Some exp3 -> "(if " ^ (expressionMatcher exp1 loc) ^ " " ^ (expressionMatcher exp2 loc) ^ " " ^ (expressionMatcher exp3 loc) ^ ")"
-		| None -> "(if " ^ (expressionMatcher exp1 loc) ^ " " ^ (expressionMatcher exp2 loc) ^ ")")
+		| None -> "(if " ^ (expressionMatcher exp1 loc) ^ " " ^ (expressionMatcher exp2 loc) ^ "(void))")
 	| Pexp_sequence (exp1, exp2) -> "(begin " ^ (expressionMatcher exp1 loc) ^ " " ^ (expressionMatcher exp2 loc) ^ ")"
 	| Pexp_construct ({txt = Lident "()"; loc = newloc;}, None) -> "void"
 	| Pexp_construct ({txt = Lident "true"; loc = newloc;}, None) -> "true"
 	| Pexp_construct ({txt = Lident "false"; loc = newloc;}, None) -> "false"
 	| Pexp_assert exp -> let assertExp = {pexp_desc = (Pexp_ident {txt = Lident "assert"; loc = loc;}); pexp_loc = loc; pexp_attributes = [];} in
 		expressionDescMatcher (Pexp_apply (assertExp, [("", exp)])) loc
+	| Pexp_try (exp, caselist) -> tryMatcher expressiondesc loc
 	| Pexp_construct ({txt = Lident typ; loc = newloc;}, Some exp) -> let {pexp_desc = expdesc; pexp_loc = newloc; pexp_attributes = pexpattr;} = exp in
 		"(" ^ typ ^ " " ^
 		(match expdesc with
 		| Pexp_tuple explist -> (List.fold_left (fun str exp -> str ^ " " ^ (expressionMatcher exp newloc)) "" explist)
 		| _ -> expressionDescMatcher expdesc loc) ^ ")"
 	| Pexp_construct ({txt = Lident typ; loc = newloc;}, None) -> "(" ^ typ ^ ")"
+	| Pexp_for (pattern, exp1, exp2, _, exp3) -> "(for ([" ^ patternMatcher pattern loc ^ " (in-range " 
+		^ expressionMatcher exp1 loc ^ expressionMatcher exp2 loc ^ ")]) " ^ expressionMatcher exp3 loc ^ ")"
+	| Pexp_field (exp, {txt = l; loc = newloc;}) -> 
+		let s = "field" ^ expressionMatcher exp loc ^ longidentMatcher l loc in funcAdder s; s
 	| _ -> print_string "Expression description matcher failed.\n"; locError loc
+and tryMatcher expressiondesc loc = 
+	match expressiondesc with
+	| Pexp_try (exp, caselist) -> "(with-handlers (" ^ caseListExceptionMatcher caselist loc ^ ") " ^ expressionMatcher exp loc ^ ")"
+	| _ -> print_string "Incorrect expression description matcher used: try.\n"; locError loc
 and expressionMatcher expression loc  =
 	match expression with
 	| {pexp_desc = expdesc; pexp_loc = loc4; pexp_attributes = pexpattr;} ->
@@ -125,9 +155,19 @@ and caseListMatcher caselist loc =
 	| {pc_lhs = pclhs; pc_guard = pcguard; pc_rhs = pcrhs;}::casetl -> 
 		let pcstring = 
 		(match pcguard with
-		| Some exp -> print_string "Haven't accounted for pcguard expressions.\n"; locError loc
+		| Some exp -> " #:when " ^ expressionMatcher exp loc
 		| None -> "") in
 		"\n[ " ^ (patternMatcher pclhs loc) ^ pcstring ^ " " ^ (expressionMatcher pcrhs loc) ^ " ] "
+		^ (caseListMatcher casetl loc)
+	| [] -> ""
+and caseListExceptionMatcher caselist loc =
+	match caselist with
+	| {pc_lhs = pclhs; pc_guard = pcguard; pc_rhs = pcrhs;}::casetl -> 
+		let pcstring = 
+		(match pcguard with
+		| Some exp -> " #:when " ^ expressionMatcher exp loc
+		| None -> "") in
+		"\n[ " ^ (patternMatcher pclhs loc) ^ pcstring ^ " (lambda (exn) " ^ (expressionMatcher pcrhs loc) ^ ")] "
 		^ (caseListMatcher casetl loc)
 	| [] -> ""
 and pexpfunMatcher expressiondesc loc =
@@ -135,7 +175,7 @@ and pexpfunMatcher expressiondesc loc =
 	| (Pexp_fun (arglabel, expressionopt, pattern, expression)) ->
 		let stringopt = 
 			(match expressionopt with
-			| Some exp -> print_string "Haven't account for expression options under Pexp_fun.\n"; locError loc
+			| Some exp -> print_string "Haven't accounted for expression options under Pexp_fun.\n"; locError loc
 			| None -> "") in
 		let arg = arglabel ^ stringopt ^ (patternMatcher pattern loc) in
 		let {pexp_desc = expdesc; pexp_loc = newloc; pexp_attributes = pexpattr;} = expression in
@@ -150,7 +190,7 @@ and pexpfunMatcher expressiondesc loc =
 and pexpmatchMatcher expressiondesc loc =
 	match expressiondesc with
 	| (Pexp_match (expression, caselist)) ->
-		" (match " ^ (expressionMatcher expression loc) ^ (caseListMatcher caselist loc) ^ ") ";
+		" (match " ^ (expressionMatcher expression loc) ^ (caseListMatcher caselist loc) ^ ") "
 	| _ -> print_string "Incorrect expression description matcher used: match.\n"; locError loc
 and longidentMatcher t loc =
 	(match t with 
@@ -163,6 +203,12 @@ and identConverter s =
 	| "||" -> "or"
 	| "~-" -> "-"
 	| "~+" -> "+"
+	| "|>" -> "pipe>"
+	| "~-." -> "-."
+	| "~+." -> "+."
+	| "==" -> "equal?"
+	| "eval" -> "evaltick"
+	| "pi" -> "pitick"
 	| _ -> Str.global_replace (Str.regexp "\'") "tick" s)
 and constantMatcher const loc = 
 	match const with
@@ -178,38 +224,39 @@ and racketFormat s =
 and letMatcher letexp loc =
 	match letexp with
 	| Pexp_let(Nonrecursive, valuebindings, exp) -> "(match-let* (" ^ (letValueBinder valuebindings loc) ^ ") " ^ (expressionMatcher exp loc) ^ ")"
-	| Pexp_let(Recursive, valuebindings, exp) -> "(letrec (" ^ (letValueBinder valuebindings loc) ^ ") " ^ (expressionMatcher exp loc) ^ ")"
+	| Pexp_let(Recursive, valuebindings, exp) -> "(letrec (" ^ (letValueBinder valuebindings loc) ^ ")\n" ^ (expressionMatcher exp loc) ^ ")"
 	| _ -> print_string "Incorrect expression description matcher used: let.\n"; locError loc
 and letValueBinder valuebindings loc =
 	match valuebindings with
 	| {	pvb_pat = pvbpat;
 		pvb_expr = pvbexpr;
 		pvb_attributes = pvbattr;
-		pvb_loc = loc2;}::valuetl -> "[" ^ (patternMatcher pvbpat loc2) ^ " " ^ (expressionMatcher pvbexpr loc2) ^ "] "
+		pvb_loc = loc2;}::valuetl -> let joiner = if (valuetl = []) then "" else "\n" in
+		"[" ^ (patternMatcher pvbpat loc2) ^ " " ^ (expressionMatcher pvbexpr loc2) ^ "]" ^ joiner ^ letValueBinder valuetl loc
 	| [] -> ""
 and applyMatcher applyExp loc =
 	let rec argumentEval ls =
 		match ls with
-		| (arglabel, exp)::tl -> " " ^ arglabel ^ " " ^ (expressionMatcher exp loc) ^ " " ^ (argumentEval tl)
+		| (arglabel, exp)::tl -> arglabel ^ " " ^ (expressionMatcher exp loc) ^ " " ^ (argumentEval tl) ^ " "
 		| [] -> ""
 	in
 	match applyExp with
-	| Pexp_apply (exp1, ls) -> "(" ^ (expressionMatcher exp1 loc) ^ (argumentEval ls) ^ ") "
+	| Pexp_apply (exp1, ls) -> let id = (expressionMatcher exp1 loc) in funcAdder id; 
+	if (id = "raise" || id = "Printexc.to_string") then "(" ^ id ^ " '" ^ (argumentEval ls) ^ ") " else
+	"(" ^ id ^ " " ^ (argumentEval ls) ^ ") "
 	| _ -> print_string "Incorrect expression description matcher used: apply.\n"; locError loc
-and tupleMatcher tupleExp loc =
-	match tupleExp with
-	| Pexp_tuple (hd::tl) -> "(cons " ^ (expressionMatcher hd loc) ^ " " ^ (tupleMatcher (Pexp_tuple tl) loc) ^ " )"
-	| Pexp_tuple [] -> "null"
-	| _ -> print_string "Incorrect expression description matcher used: tuple.\n"; locError loc
 and strdescMatcher strdesc loc rackprog = 
 	match strdesc with
 	| Pstr_value(recflag, valuebinding) -> 
 		(match valuebinding with
-		| {	pvb_pat = pvbpat;
+		| {	pvb_pat = {ppat_desc = pdesc; ppat_loc = loc1; ppat_attributes = ppatattr;} as pvbpat;
 			pvb_expr = pvbexpr;
 			pvb_attributes = pvbattr;
-			pvb_loc = loc2;}::vbindtl -> 
-			rackprog := !rackprog ^ "(define " ^ (patternMatcher pvbpat loc2);
+			pvb_loc = loc2;}::vbindtl -> let defineType =
+			(match pdesc with
+				| Ppat_var _ -> "(define "
+				| _ -> "(match-define ") in
+			rackprog := !rackprog ^ defineType ^ (patternMatcher pvbpat loc2);
 			rackprog := !rackprog ^ (expressionMatcher pvbexpr loc2) ^ ")\n";
 			strdescMatcher (Pstr_value (recflag, vbindtl)) loc rackprog
 		| [] -> ())
@@ -275,18 +322,55 @@ and toRacket ast rackprog =
 
 let z = (ref "");;
 toRacket (read_sig Sys.argv.(1)) z;;
-z := "(define print_string write)
+z := 
+"(define (Printfkprintf f . l) (f (apply format l)))
+(require 
+  (rename-in racket/base [define define-original]) 
+  (for-syntax syntax/parse)) 
+(define-syntax (define stx) 
+   (syntax-parse stx 
+     [(define i:id v:expr) (if (identifier-binding #'i) 
+                               #'(set! i v) 
+                               #'(define-original i v))] 
+     [(define (f:id arg:id ...) body ...) 
+        (if (identifier-binding #'f) 
+            #'(set! f (lambda (arg ...) body ...)) 
+            #'(define-original (f arg ...) body ...))]))
+(require syntax/parse/define
+         (for-syntax syntax/parse ; for syntax-parse
+                     syntax/stx)) ; for stx-map
+
+(begin-for-syntax
+  ;; defs->set!s : Syntax -> Syntax
+  ;; A helper function for match-set!, to transform define-values into set!-values
+  (define (defs->set!s defs)
+    (syntax-parse defs #:literals (begin define-values)
+      [(define-values [x ...] expr)
+       #'(set!-values [x ...] expr)]
+      [(begin defs ...)
+       #:with (set!s ...) (stx-map defs->set!s #'(defs ...))
+       #'(begin set!s ...)])))
+
+(define-syntax-parser match-set!
+  [(match-set! pat expr)
+   #:with defs
+   (local-expand #'(match-define pat expr) (syntax-local-context) #f)
+   (defs->set!s #'defs)])
+(define-struct ocamltuple (x))
+(define print_string write)
 (define print_int write)
 (define /. /)
 (define +. +)
 (define *. *)
 (define -. -)
-(define int_of_float values)
+(define (int_of_float x) (if (inexact? x) (inexact->exact (truncate x)) (error \"Expected float\")))
 (define open_out open-output-file)
 (define Formatsprintf format)
 (define Formatprintf printf)
 (define output_string fprintf)
 (define char_of_int integer->char)
+(define (string_of_int x) (if (integer? x) (number->string x) (error \"Expected int\")))
+(define (int_of_string x) (if (string? (string->number x)) (string->number x) (error \"Expected string of integer\")))
 (define (output_char chan char) (write-char char chan))
 (define close_out close-output-port)
 (define Syscommand system)
@@ -302,7 +386,7 @@ z := "(define print_string write)
 (define (! x) (vector-ref x 0))
 (define RandomStatemake vector->pseudo-random-generator)
 (define RandomStateint random)
-(define float_of_int values)
+(define (float_of_int x) (if (exact-integer? x) (exact->inexact x) (error \"Expected int\")))
 (define ^ string-append)
 (define failwith error)
 (define @ append)
@@ -315,8 +399,68 @@ z := "(define print_string write)
 (define Listappend append)
 (define Listfold_left foldl)
 (define Listfold_right foldr)
-(define == equal?)
-(define (!= x y) (not (equal? x y)))\n" ^ !z;;
-z := "#lang racket\n" ^ !z;;
-let outputstr = Str.global_replace (Str.regexp ".ml") ".rkt" Sys.argv.(1) in
-output_string (open_out outputstr) !z;;
+(define (!= x y) (not (equal? x y)))
+(define fieldlistlength length)
+(define (mod_float x y) (- x (* (truncate ( / x y)) y)))
+(define (Stringconcat s l) (string-join l s))
+(define (string_of_float x) (if (inexact? x) (number->string x) (error \"Expected float\")))
+(define (float_of_string x) (+ (string->number) 0.0))
+(define <. <)
+(define Printffprintf fprintf)
+(define Printfprintf printf)
+(define (atan2 y x) (atan (/ y x)))
+(define Listmem member)
+(define Listnth list-ref)
+(define fieldlistrev reverse)
+(struct Some (x))
+(struct None ())
+(define (get opt) (match opt
+                   [(Some x) x]
+                   [None raise `No_value]))
+(define Stringset string-set!)
+(define (print_newline void) (newline))
+(define (incr x) (vector-set! x 0 (+ (vector-ref x 0) 1)))
+(define Listiter for-each)
+(define (Listconcat l) (foldr append (list) l))
+(define fst car)
+(define snd cdr)
+(define Printexcto_string symbol->string)
+(define (log10 n) (/ (log n) (log 10)))
+(define (<> a b) (not (= a b)))
+(define (pipe> arg f) (f arg))
+(define Listtl rest)
+(define Stringlength string-length)
+(define Stringget string-ref)
+(define (Listcombine l1 l2)
+  (foldr (lambda (e1 e2 acc) (cons (list e1 e2) acc))
+         '()
+         l1 l2))
+(define (Listsplit l1)
+  (foldr (lambda (e1 acc) (match e1
+                            [(list f s) (match acc
+                                          [(list a b) (list (cons f a) (cons s b))])])) (list '() '()) l1))
+(define Listmap map)
+(define Listhd first)
+(define ** expt)
+(define float float_of_int)
+(define max_float 1.7976931348623157e+308)
+(define (& x y) (and x y))
+(define pitick pi)\n" ^ !z;;
+z := "#lang racket\n" ^ !z;;(*
+let outputstr = "./translated/" ^ (Str.global_replace (Str.regexp ".ml") ".rkt" Sys.argv.(1)) in
+output_string (open_out outputstr) !z;;*) print_string !z;;
+(*and asDissecter {ppat_desc = pdesc; ppat_loc = loc1; ppat_attributes = ppatattr;} loc =
+	match pdesc with
+	| Ppat_alias (pattern, {txt = s; loc = newloc;}) -> let (rems, remn) = asDissecter pattern loc
+	("(let " ^ (longidentMatcher s) ^ " " ^ rems, 1 + remn)
+	| Ppat_or (patt1, patt2) -> let (rems, remn) = asDissecter patt1 loc in
+		let (remss, remnn) = asDissecter patt2 loc in
+		(rems ^ remss, remn + remnn)
+	| 
+	| _ -> ("", 0)
+
+	and tupleMatcher tupleExp loc =
+	match tupleExp with
+	| Pexp_tuple (hd::tl) -> "(tuple " ^ (expressionMatcher hd loc) ^ " " ^ (tupleMatcher (Pexp_tuple tl) loc) ^ " )"
+	| Pexp_tuple [] -> "null"
+	| _ -> print_string "Incorrect expression description matcher used: tuple.\n"; locError loc*)
