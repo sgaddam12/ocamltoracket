@@ -423,7 +423,7 @@ z :=
 (define (intplus x y) (if (and (exact-integer? x) (exact-integer? y)) (+ x y) (error 'ExpectedInteger)))
 (define (intminus x y) (if (and (exact-integer? x) (exact-integer? y)) (- x y) (error 'ExpectedInteger)))
 (define (~- x) (if (exact-integer? x) (- 0 x) (error `ExpectedInteger)))
-(define (~+ x) (if (exact-integer? x) (+ 0 x) (error `ExpectedInteger))
+(define (~+ x) (if (exact-integer? x) (+ 0 x) (error `ExpectedInteger)))
 (define (int_of_float x) (if (inexact? x) (inexact->exact (truncate x)) (error \"Expected float\")))
 (define open_out open-output-file)
 (define Formatsprintf format)
@@ -509,9 +509,9 @@ z :=
 (define max_float 1.7976931348623157e+308)
 (define (& x y) (and x y))
 (define min_float 2.2250738585072014e-308)\n" ^ !z;;
-z := "#lang racket\n" ^ !z;;
+z := "#lang racket\n" ^ !z;;(*
 let outputstr = "./translated/" ^ (Str.global_replace (Str.regexp ".ml") ".rkt" Sys.argv.(1)) in
-output_string (open_out outputstr) !z;;
+output_string (open_out outputstr) !z;;*)print_string !z;;
 (*and asDissecter {ppat_desc = pdesc; ppat_loc = loc1; ppat_attributes = ppatattr;} loc =
 	match pdesc with
 	| Ppat_alias (pattern, {txt = s; loc = newloc;}) -> let (rems, remn) = asDissecter pattern loc
