@@ -114,10 +114,11 @@ and expressionDescMatcher expressiondesc loc =
 	| Pexp_function caselist -> updateLocEnv letenv (getEnvCaseList loc caselist);
 		"(match-lambda** " ^ (caseListFunctionMatcher caselist loc) ^ ")"
 	| Pexp_fun (arglabel, expressionopt, pattern, expression) -> 
+		let exp = expressionMatcher expression loc in
 		let {ppat_desc = pdesc; ppat_loc = loc1; ppat_attributes = ppatattr;} = pattern in 
 		updateLocEnv letenv (getEnv loc pdesc);
-		let (args, resultExpression) = pexpfunMatcher expressiondesc loc
-		in "(match-lambda** [(" ^ args ^ ") " ^ resultExpression ^ "])"
+		let pat = patternDescMatcher pdesc loc
+		in "(match-lambda [" ^ pat ^ " " ^ exp ^ "])"
 	| Pexp_match (expression, caselist) -> updateLocEnv letenv (getEnvCaseList loc caselist); (pexpmatchMatcher expressiondesc loc)
 	| Pexp_ident {txt = t; loc = locid;} -> longidentMatcher t locid
 	| Pexp_constant const -> constantMatcher const loc
@@ -277,13 +278,15 @@ and letValueBinder valuebindings loc =
 and applyMatcher applyExp loc =
 	let rec argumentEval ls =
 		match ls with
-		| (arglabel, exp)::tl -> arglabel ^ " " ^ (expressionMatcher exp loc) ^ " " ^ (argumentEval tl) ^ " "
-		| [] -> ""
+		| (arglabel, exp)::tl -> let (count, str) = argumentEval tl in
+			(count + 1, arglabel ^ " " ^ (expressionMatcher exp loc) ^ ") " ^ str)
+		| [] -> (0, "")
 	in
 	match applyExp with
-	| Pexp_apply (exp1, ls) -> let id = (expressionMatcher exp1 loc) in funcAdder id; 
-	if (id = "raise" || id = "Printexc.to_string") then "(" ^ id ^ " '" ^ (argumentEval ls) ^ ") " else
-	"(" ^ id ^ " " ^ (argumentEval ls) ^ ") "
+	| Pexp_apply (exp1, ls) -> let id = (expressionMatcher exp1 loc) in
+	funcAdder id; let (count, args) = argumentEval ls in let parens = String.make count '(' in
+	if (id = "raise" || id = "Printexc.to_string") then parens ^ id ^ " '" ^ args ^ ") " else
+	parens ^ id ^ " " ^ args
 	| _ -> print_string "Incorrect expression description matcher used: apply.\n"; locError loc
 and strdescMatcher strdesc loc rackprog = 
 	match strdesc with
@@ -408,110 +411,121 @@ Hashtbl.add globenv "list" "list";;
 let z = (ref "");;
 toRacket (read_sig Sys.argv.(1)) z;;
 z := 
-"(define (Printfkprintf f . l) (f (apply format l)))
+"(define (count-format-string-args s)
+  (count (curry equal? #\\~) (string->list s)))
+(define (curry-format func)
+  (lambda (format-string)
+    (let ([num-args (count-format-string-args format-string)])
+    (letrec ([arg-taker (lambda (list-args)
+      (lambda (arg)
+        (let ([new-list-args (append list-args (list arg))])
+        (if (= (length new-list-args) num-args) (func (apply format format-string new-list-args)) (arg-taker new-list-args)))))])
+    (arg-taker '())))))
+
+(define Printfkprintf (lambda (f) (curry-format f)))
 (define-struct ocamltuple (x))
-(define print_string write)
-(define print_int write)
-(define (/. x y) (if (and (flonum? x) (flonum? y)) (/ x y) (error `ExpectedFlonum)))
-(define (+. x y) (if (and (flonum? x) (flonum? y)) (+ x y) (error `ExpectedFlonum)))
-(define (*. x y) (if (and (flonum? x) (flonum? y)) (* x y) (error `ExpectedFlonum)))
-(define (-. x y) (if (and (flonum? x) (flonum? y)) (- x y) (error `ExpectedFlonum)))
-(define (~-. x) (if (flonum? x) (- 0 x) (error `ExpectedFlonum)))
-(define (~+. x) (if (flonum? x) (+ 0 x) (error `ExpectedFlonum)))
-(define (intdivide x y) (if (and (exact-integer? x) (exact-integer? y)) (truncate (/ x y)) (error 'ExpectedInteger)))
-(define (intmult x y) (if (and (exact-integer? x) (exact-integer? y)) (* x y) (error 'ExpectedInteger)))
-(define (intplus x y) (if (and (exact-integer? x) (exact-integer? y)) (+ x y) (error 'ExpectedInteger)))
-(define (intminus x y) (if (and (exact-integer? x) (exact-integer? y)) (- x y) (error 'ExpectedInteger)))
-(define (~- x) (if (exact-integer? x) (- 0 x) (error `ExpectedInteger)))
-(define (~+ x) (if (exact-integer? x) (+ 0 x) (error `ExpectedInteger)))
-(define (int_of_float x) (if (inexact? x) (inexact->exact (truncate x)) (error \"Expected float\")))
-(define open_out open-output-file)
-(define Formatsprintf format)
-(define Formatprintf printf)
-(define output_string fprintf)
-(define char_of_int integer->char)
-(define (string_of_int x) (if (integer? x) (number->string x) (error \"Expected int\")))
-(define (int_of_string x) (if (string? (string->number x)) (string->number x) (error \"Expected string of integer\")))
-(define (output_char chan char) (write-char char chan))
-(define close_out close-output-port)
-(define Syscommand system)
-(define (assert bool)
+(define print_string (match-lambda [s (if (string? s) (write s) (error `ExpectedString))]))
+(define print_int (match-lambda [i (if (exact-integer? i) (write i) (error `ExpectedInteger))]))
+(define /. (match-lambda [x (match-lambda [y (if (and (flonum? x) (flonum? y)) (/ x y) (error `ExpectedFlonum))])]))
+(define +. (match-lambda [x (match-lambda [y (if (and (flonum? x) (flonum? y)) (+ x y) (error `ExpectedFlonum))])]))
+(define -. (match-lambda [x (match-lambda [y (if (and (flonum? x) (flonum? y)) (- x y) (error `ExpectedFlonum))])]))
+(define *. (match-lambda [x (match-lambda [y (if (and (flonum? x) (flonum? y)) (* x y) (error `ExpectedFlonum))])]))
+(define ~-. (match-lambda [x (if (flonum? x) (- 0 x) (error `ExpectedFlonum))]))
+(define ~+. (match-lambda [x (if (flonum? x) (+ 0 x) (error `ExpectedFlonum))]))
+(define intdivide (match-lambda [x (match-lambda [y (if (and (exact-integer? x) (exact-integer? y)) (truncate (/ x y)) (error 'ExpectedInteger))])]))
+(define intmult (match-lambda [x (match-lambda [y (if (and (exact-integer? x) (exact-integer? y)) (* x y) (error 'ExpectedInteger))])]))
+(define intplus (match-lambda [x (match-lambda [y (if (and (exact-integer? x) (exact-integer? y)) (+ x y) (error 'ExpectedInteger))])]))
+(define intminus (match-lambda [x (match-lambda [y (if (and (exact-integer? x) (exact-integer? y)) (- x y) (error 'ExpectedInteger))])]))
+(define ~- (match-lambda [x (if (exact-integer? x) (- 0 x) (error `ExpectedInteger))]))
+(define ~+ (match-lambda [x (if (exact-integer? x) (+ 0 x) (error `ExpectedInteger))]))
+(define int_of_float (match-lambda [x (if (inexact? x) (inexact->exact (truncate x)) (error \"Expected float\"))]))
+(define open_out (match-lambda [s (open-output-file s)]))
+(define Formatsprintf (curry-format (lambda (n) n)))
+(define Formatprintf (curry-format (lambda (n) (write n))))
+(define output_string (match-lambda [output (match-lambda [s (fprintf output s)])]))
+(define char_of_int (match-lambda [c (integer->char c)]))
+(define string_of_int (match-lambda [x (if (integer? x) (number->string x) (error \"Expected int\"))]))
+(define int_of_string (match-lambda [x (if (string? (string->number x)) (string->number x) (error \"Expected string of integer\"))]))
+(define output_char (match-lambda [chan (match-lambda [char (write-char char chan)])]))
+(define close_out (match-lambda [out (close-output-port out)]))
+(define Syscommand (match-lambda [command (system command)]))
+(define assert (match-lambda [bool
     (cond
-      [(not bool) raise 'AssertionError]))
-(define Arrayof_list list->vector)
-(define Arraymake make-vector)
-(define Arrayget vector-ref)
-(define Arrayset vector-set!)
-(define (ref x) (make-vector 1 x))
-(define (:= x y) (vector-set! x 0 y))
-(define (! x) (vector-ref x 0))
-(define (RandomStatemake v) (let ([randgen (make-pseudo-random-generator)])
+      [(not bool) raise 'AssertionError])]))
+(define Arrayof_list (match-lambda [l (list->vector l)]))
+(define Arraymake (match-lambda [size (match-lambda [init (make-vector size init)])]))
+(define Arrayget (match-lambda [vec (match-lambda [pos (vector-ref vec pos)])]))
+(define Arrayset (match-lambda [vec (match-lambda [pos (match-lambda [init (vector-set! vec pos init)])])]))
+(define ref (match-lambda [x (make-vector 1 x)]))
+(define := (match-lambda [x (match-lambda [y (vector-set! x 0 y)])]))
+(define ! (match-lambda [x (vector-ref x 0)]))
+(define RandomStatemake (match-lambda [x (let ([randgen (make-pseudo-random-generator)])
                               (begin
                                 (vector->pseudo-random-generator! randgen (Arrayof_list (list 1 2 3 4 5 6)))
-                                randgen)))
-(define RandomStateint random)
-(define (float_of_int x) (if (exact-integer? x) (exact->inexact x) (error \"Expected int\")))
-(define ^ string-append)
-(define failwith error)
-(define (@ x y) (append x y))
-(define mod remainder)
-(define abs_float abs)
-(define Printfsprintf printf)
+                                randgen))]))
+(define RandomStateint (match-lambda [t (match-lambda [i (random t i)])]))
+(define float_of_int (match-lambda [x (if (exact-integer? x) (exact->inexact x) (error \"Expected int\"))]))
+(define ^ (match-lambda [x (match-lambda [y (string-append x y)])]))
+(define failwith (match-lambda [sym (error sym)]))
+(define @ (match-lambda [x (match-lambda [y (append x y)])]))
+(define mod (match-lambda [x (match-lambda [y (if (and (exact-integer? x) (exact-integer? y)) (remainder x y) (error 'ExpectedInteger))])]))
+(define abs_float (match-lambda [f (if (flonum? f) (abs f) (error `ExpectedFlonum))]))
+(define Printfsprintf Formatsprintf)
 (define-syntax-rule (ignore x) (void))
-(define Listlength length)
-(define Listrev reverse)
-(define (Listappend x y) (append x y))
-(define Listfold_left foldl)
-(define Listfold_right foldr)
-(define (!= x y) (not (equal? x y)))
-(define fieldlistlength length)
-(define (mod_float x y) (- x (* (truncate ( / x y)) y)))
-(define (Stringconcat s l) (string-join l s))
-(define (string_of_float x) (if (inexact? x) (number->string x) (error \"Expected float\")))
-(define (float_of_string x) (+ (string->number) 0.0))
-(define <. <)
-(define Printffprintf fprintf)
-(define Printfprintf printf)
-(define (atan2 y x) (atan (/ y x)))
-(define Listmem member)
-(define Listnth list-ref)
-(define fieldlistrev reverse)
+(define Listlength (match-lambda [l (length l)]))
+(define Listrev (match-lambda [l (reverse l)]))
+(define Listappend (match-lambda [x (match-lambda [y (append x y)])]))
+(define Listfold_left (match-lambda [x (match-lambda [y (match-lambda [z (foldl x y z)])])]))
+(define Listfold_right (match-lambda [x (match-lambda [y (match-lambda [z (foldr x y z)])])]))
+(define != (match-lambda [x (match-lambda [y (not (equal? x y))])]))
+(define fieldlistlength (match-lambda [x (length x)]))
+(define mod_float (match-lambda [x (match-lambda [y (if (and (flonum? x) (flonum? y)) (- x (* (truncate ( / x y)) y)) (error `ExpectedFlonum))])]))
+(define Stringconcat (match-lambda [s (match-lambda [l (string-join l s)])]))
+(define string_of_float (match-lambda [x (if (flonum? x) (number->string x) (error \"Expected float\"))]))
+(define float_of_string (match-lambda [x (+ (string->number x) 0.0)]))
+(define <. (match-lambda [x (match-lambda [y (< x y)])]))
+(define Printffprintf (lambda (out) (curry-format (curry fprintf out))))
+(define Printfprintf Formatprintf)
+(define atan2 (match-lambda [x (match-lambda [y (if (and (flonum? x) (flonum? y)) (atan (/ y x)) (error 'ExpectedFlonum))])]))
+(define Listmem (match-lambda [x (match-lambda [l (member x l)])]))
+(define Listnth (match-lambda [l (match-lambda [y (list-ref l y)])]))
+(define fieldlistrev (match-lambda [l (reverse l)]))
 (struct Some (x))
 (struct None ())
-(define (get opt) (match opt
+(define get (match-lambda [opt (match opt
                    [(Some x) x]
-                   [None raise `No_value]))
-(define Stringset string-set!)
-(define (print_newline void) (newline))
-(define Listiter for-each)
-(define (Listconcat l) (foldr append (list) l))
-(define fst car)
-(define snd cdr)
-(define Printexcto_string symbol->string)
-(define (log10 n) (/ (log n) (log 10)))
-(define (<> a b) (not (= a b)))
-(define (>pipe<> arg f) (f arg))
-(define Listtl rest)
-(define Stringlength string-length)
-(define Stringget string-ref)
-(define (Listcombine l1 l2)
+                   [None raise `No_value])]))
+(define Stringset (match-lambda [s (match-lambda [i (match-lambda [c (string-set! s i c)])])]))
+(define print_newline (match-lambda [void (newline)]))
+(define Listiter (match-lambda [f (match-lambda [l (for-each f l)])]))
+(define Listconcat (match-lambda [l (foldr append (list) l)]))
+(define fst (match-lambda [l (car l)]))
+(define snd (match-lambda [l (cdr l)]))
+(define Printexcto_string (match-lambda [exc (symbol->string exc)]))
+(define log10 (match-lambda [n (if (flonum? n) (/ (log n) (log 10)) (error 'ExpectedFlonum))]))
+(define <> (match-lambda [a (match-lambda [b (not (= a b))])]))
+(define >pipe<> (match-lambda [arg (match-lambda [f (f arg)])]))
+(define Listtl (match-lambda [l (rest l)]))
+(define Stringlength (match-lambda [s (string-length s)]))
+(define Stringget (match-lambda [s (match-lambda [i (string-ref s i)])]))
+(define Listcombine (match-lambda [l1 (match-lambda [l2
   (foldr (lambda (e1 e2 acc) (cons (list e1 e2) acc))
          '()
-         l1 l2))
-(define (Listsplit l1)
+         l1 l2)])]))
+(define Listsplit (match-lambda [l1
   (foldr (lambda (e1 acc) (match e1
                             [(list f s) (match acc
-                                          [(list a b) (list (cons f a) (cons s b))])])) (list '() '()) l1))
-(define Listmap map)
-(define Listhd first)
-(define ** expt)
-(define float float_of_int)
+                                          [(list a b) (list (cons f a) (cons s b))])])) (list '() '()) l1)]))
+(define Listmap (match-lambda [f (match-lambda [l (map f l)])])) 
+(define Listhd (match-lambda [l (first l)]))
+(define ** (match-lambda [x (match-lambda [y (if (and (flonum? x) (flonum? y)) (expt x y) (error 'ExpectedFlonum))])]))
+(define float (match-lambda [i (float_of_int i)]))
 (define max_float 1.7976931348623157e+308)
-(define (& x y) (and x y))
+(define & (match-lambda [x (match-lambda [y (and x y)])]))
 (define min_float 2.2250738585072014e-308)\n" ^ !z;;
-z := "#lang racket\n" ^ !z;;(*
+z := "#lang racket\n" ^ !z;;
 let outputstr = "./translated/" ^ (Str.global_replace (Str.regexp ".ml") ".rkt" Sys.argv.(1)) in
-output_string (open_out outputstr) !z;;*)print_string !z;;
+output_string (open_out outputstr) !z;;
 (*and asDissecter {ppat_desc = pdesc; ppat_loc = loc1; ppat_attributes = ppatattr;} loc =
 	match pdesc with
 	| Ppat_alias (pattern, {txt = s; loc = newloc;}) -> let (rems, remn) = asDissecter pattern loc
