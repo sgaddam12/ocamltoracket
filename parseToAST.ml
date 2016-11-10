@@ -222,10 +222,20 @@ and identConverter b s =
 	| "-" -> "intminus"
 	| "/" -> "intdivide"
 	| "*" -> "intmult"
-	| "&&" -> "and"
-	| "||" -> "or"
+	| "=" -> "structeq"
+	| "==" -> "physeq"
+	| "<" -> "lessthan"
+	| ">" -> "grtthan"
+	| ">=" -> "grtthaneq"
+	| "<=" -> "lessthaneq"
+	| "&&" -> "booland"
+	| "&" -> "booland"
+	| "or" -> "boolor"
+	| "||" -> "boolor"
 	| "|>" -> "pipe>"
-	| "==" -> "equal?"
+	| "min" -> "minf"
+	| "max" -> "maxf"
+	| ("cos" | "sin" | "tan" | "acos" | "atan" | "asin" | "cosh" | "sinh" | "tanh") as f -> f ^ "f"
 	| _ -> let s = Str.global_replace (Str.regexp "'") ">tick<" s
 			in let s = Str.global_replace (Str.regexp "|") ">pipe<" s
 			in Str.global_replace (Str.regexp "\\") "\\\\\\\\" s) in 
@@ -285,7 +295,14 @@ and applyMatcher applyExp loc =
 	match applyExp with
 	| Pexp_apply (exp1, ls) -> let id = (expressionMatcher exp1 loc) in
 	funcAdder id; let (count, args) = argumentEval ls in let parens = String.make count '(' in
-	if (id = "raise" || id = "Printexc.to_string") then parens ^ id ^ " '" ^ args ^ ") " else
+	if (id = "raise" || id = "Printexc.to_string") then 
+	(let newargs = (match ls with
+		| [(_, {pexp_desc = expdesc; pexp_loc = loc4; pexp_attributes = pexpattr;})] -> 
+			(match expdesc with
+			| Pexp_construct ({txt = Lident s; loc = newloc;}, None) -> s
+			| _ -> args)
+		| _ -> args) in
+	parens ^ id ^ " '" ^ newargs ^ ") ") else
 	parens ^ id ^ " " ^ args
 	| _ -> print_string "Incorrect expression description matcher used: apply.\n"; locError loc
 and strdescMatcher strdesc loc rackprog = 
@@ -408,6 +425,7 @@ and toRacket ast rackprog =
 
 Hashtbl.clear globenv;;
 Hashtbl.add globenv "list" "list";;
+Hashtbl.add globenv ">pipe<>" ">pipe<>";;
 let z = (ref "");;
 toRacket (read_sig Sys.argv.(1)) z;;
 z := 
@@ -463,7 +481,7 @@ z :=
                               (begin
                                 (vector->pseudo-random-generator! randgen (Arrayof_list (list 1 2 3 4 5 6)))
                                 randgen))]))
-(define RandomStateint (match-lambda [t (match-lambda [i (random t i)])]))
+(define RandomStateint (match-lambda [t (match-lambda [i (random i t)])]))
 (define float_of_int (match-lambda [x (if (exact-integer? x) (exact->inexact x) (error \"Expected int\"))]))
 (define ^ (match-lambda [x (match-lambda [y (string-append x y)])]))
 (define failwith (match-lambda [sym (error sym)]))
@@ -475,8 +493,21 @@ z :=
 (define Listlength (match-lambda [l (length l)]))
 (define Listrev (match-lambda [l (reverse l)]))
 (define Listappend (match-lambda [x (match-lambda [y (append x y)])]))
-(define Listfold_left (match-lambda [x (match-lambda [y (match-lambda [z (foldl x y z)])])]))
-(define Listfold_right (match-lambda [x (match-lambda [y (match-lambda [z (foldr x y z)])])]))
+(define Listfold_left
+  (match-lambda
+    [f (match-lambda
+         [a (match-lambda
+              [l (if (= (length l) 0)
+                     a
+                     (((Listfold_left f) ((f a) (first l))) (rest l)))])])]))
+
+(define Listfold_right
+  (match-lambda
+    [f (match-lambda
+         [l (match-lambda
+              [a (if (= (length l) 0)
+                     a
+                     ((f (first l)) (((Listfold_right f) (rest l)) a)))])])]))
 (define != (match-lambda [x (match-lambda [y (not (equal? x y))])]))
 (define fieldlistlength (match-lambda [x (length x)]))
 (define mod_float (match-lambda [x (match-lambda [y (if (and (flonum? x) (flonum? y)) (- x (* (truncate ( / x y)) y)) (error `ExpectedFlonum))])]))
@@ -499,8 +530,8 @@ z :=
 (define print_newline (match-lambda [void (newline)]))
 (define Listiter (match-lambda [f (match-lambda [l (for-each f l)])]))
 (define Listconcat (match-lambda [l (foldr append (list) l)]))
-(define fst (match-lambda [l (car l)]))
-(define snd (match-lambda [l (cdr l)]))
+(define fst (match-lambda [(ocamltuple l) (if (= (length l) 2) (car l) (error `ExpectedPair))]))
+(define snd (match-lambda [(ocamltuple l) (if (= (length l) 2) (cdr l) (error `ExpectedPair))]))
 (define Printexcto_string (match-lambda [exc (symbol->string exc)]))
 (define log10 (match-lambda [n (if (flonum? n) (/ (log n) (log 10)) (error 'ExpectedFlonum))]))
 (define <> (match-lambda [a (match-lambda [b (not (= a b))])]))
@@ -521,8 +552,26 @@ z :=
 (define ** (match-lambda [x (match-lambda [y (if (and (flonum? x) (flonum? y)) (expt x y) (error 'ExpectedFlonum))])]))
 (define float (match-lambda [i (float_of_int i)]))
 (define max_float 1.7976931348623157e+308)
-(define & (match-lambda [x (match-lambda [y (and x y)])]))
-(define min_float 2.2250738585072014e-308)\n" ^ !z;;
+(define min_float 2.2250738585072014e-308)
+(define minf (match-lambda [x (match-lambda [y (min x y)])]))
+(define maxf (match-lambda [x (match-lambda [y (max x y)])]))
+(define structeq (match-lambda [x (match-lambda [y (equal? x y)])]))
+(define physeq (match-lambda [x (match-lambda [y (= x y)])]))
+(define lessthan (match-lambda [x (match-lambda [y (< x y)])]))
+(define grtthan (match-lambda [x (match-lambda [y (> x y)])]))
+(define lessthaneq (match-lambda [x (match-lambda [y (<= x y)])]))
+(define grtthaneq (match-lambda [x (match-lambda [y (>= x y)])]))
+(define boolor (match-lambda [x (match-lambda [y (or x y)])]))
+(define booland (match-lambda [x (match-lambda [y (and x y)])]))
+(define cosf (match-lambda [x (if (flonum? x) (cos x) (error `ExpectedFlonum))]))
+(define sinf (match-lambda [x (if (flonum? x) (sin x) (error `ExpectedFlonum))]))
+(define tanf (match-lambda [x (if (flonum? x) (tan x) (error `ExpectedFlonum))]))
+(define sinhf (match-lambda [x (if (flonum? x) (sinh x) (error `ExpectedFlonum))]))
+(define coshf (match-lambda [x (if (flonum? x) (cosh x) (error `ExpectedFlonum))]))
+(define tanhf (match-lambda [x (if (flonum? x) (tanh x) (error `ExpectedFlonum))]))
+(define atanf (match-lambda [x (if (flonum? x) (atan x) (error `ExpectedFlonum))]))
+(define acosf (match-lambda [x (if (flonum? x) (acos x) (error `ExpectedFlonum))]))
+(define asinf (match-lambda [x (if (flonum? x) (asin x) (error `ExpectedFlonum))]))\n" ^ !z;;
 z := "#lang racket\n" ^ !z;;
 let outputstr = "./translated/" ^ (Str.global_replace (Str.regexp ".ml") ".rkt" Sys.argv.(1)) in
 output_string (open_out outputstr) !z;;
