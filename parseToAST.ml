@@ -50,6 +50,8 @@ let rec patternDescMatcher patterndesc loc =
 	| Ppat_or (patt1, patt2) -> "(or " ^ (patternMatcher patt1 loc) ^ " " ^ (patternMatcher patt2 loc) ^ ") "
 	| Ppat_constant const -> (constantMatcher const loc)
 	| Ppat_any -> "_ "
+	| Ppat_alias (patt, {txt = str; loc = newloc;}) -> 
+		let pattstr = patternMatcher patt loc in "(and " ^ (longidentMatcher (Lident str) loc) ^ " " ^ pattstr ^ ")"
 	| Ppat_tuple explist -> "(ocamltuple (list " ^ (List.fold_right (fun a b -> (patternMatcher a loc) ^ " " ^ b) explist "") ^ "))"
 	| Ppat_construct ({txt = Lident "::"; loc = newloc;}, _) | Ppat_construct ({txt = Lident "[]"; loc = newloc;}, _) -> 
 		"(list " ^ (listPatternMatcher patterndesc newloc) ^ ")"
@@ -337,6 +339,7 @@ and getEnv loc1 = function
 	| Ppat_tuple (h::t) -> (match h with
 		| {ppat_desc = pdesc; ppat_loc = _; ppat_attributes = _;} ->
 		(getEnv loc1 pdesc)@(getEnv loc1 (Ppat_tuple t)))
+	| Ppat_alias ({ppat_desc = patt1; ppat_loc = _; ppat_attributes = _;}, {txt = str; loc = newloc;}) -> (getEnv loc1 patt1)@[str]
 	| Ppat_tuple [] -> []
 	| Ppat_construct ({txt = Lident "::"; loc = _;}, Some {ppat_desc = pdesc; ppat_loc = _; ppat_attributes = _;}) -> getEnv loc1 pdesc
 	| Ppat_construct ({txt = Lident "[]"; loc = _;}, None) -> []
@@ -572,24 +575,9 @@ z :=
 (define atanf (match-lambda [x (if (flonum? x) (atan x) (error `ExpectedFlonum))]))
 (define acosf (match-lambda [x (if (flonum? x) (acos x) (error `ExpectedFlonum))]))
 (define asinf (match-lambda [x (if (flonum? x) (asin x) (error `ExpectedFlonum))]))\n" ^ !z;;
-z := "#lang racket\n" ^ !z;;
+z := "#lang racket\n" ^ !z;;(*
 let outputstr = "./translated/" ^ (Str.global_replace (Str.regexp ".ml") ".rkt" Sys.argv.(1)) in
-output_string (open_out outputstr) !z;;
-(*and asDissecter {ppat_desc = pdesc; ppat_loc = loc1; ppat_attributes = ppatattr;} loc =
-	match pdesc with
-	| Ppat_alias (pattern, {txt = s; loc = newloc;}) -> let (rems, remn) = asDissecter pattern loc
-	("(let " ^ (longidentMatcher s) ^ " " ^ rems, 1 + remn)
-	| Ppat_or (patt1, patt2) -> let (rems, remn) = asDissecter patt1 loc in
-		let (remss, remnn) = asDissecter patt2 loc in
-		(rems ^ remss, remn + remnn)
-	| 
-	| _ -> ("", 0)
-
-	and tupleMatcher tupleExp loc =
-	match tupleExp with
-	| Pexp_tuple (hd::tl) -> "(tuple " ^ (expressionMatcher hd loc) ^ " " ^ (tupleMatcher (Pexp_tuple tl) loc) ^ " )"
-	| Pexp_tuple [] -> "null"
-	| _ -> print_string "Incorrect expression description matcher used: tuple.\n"; locError loc*)
+output_string (open_out outputstr) !z;;*)print_string !z;;
 
 (*(require 
   (rename-in racket/base [define define-original]) 
