@@ -5,6 +5,9 @@ open Parsetree
 open Asttypes
 open Longident
 
+(*Currently, the implementation isn't very pretty at all in terms of proper spacing and indenting.*)
+
+(*Read and parse the file into an AST*)
 let read_sig filename =
 	Location.input_name := filename ;
 	let handle =
@@ -17,6 +20,7 @@ let read_sig filename =
 	close_in handle ;
 	ast;;
 
+(*List of all the functions being used in the program.*)
 let funcs = ref [];;
 
 let funcAdder s = 
@@ -25,11 +29,13 @@ let funcAdder s =
 let funcPrint () =
 	List.iter (fun s -> print_string (s ^ "\n")) !funcs;;
 
+(*Error handling.*)
 let locError {loc_start = {pos_fname = fnamestart; pos_lnum = lnumstart; pos_bol = bolstart; pos_cnum = cnumstart;};
 				loc_end = {pos_fname = fnameend; pos_lnum = lnumend; pos_bol = bolend; pos_cnum = cnumend;};
 				loc_ghost = ghostbool;} =
 				failwith ("Failed to account for: " ^ string_of_int lnumstart ^ ":" ^ string_of_int cnumstart ^ " to " ^ string_of_int lnumend ^ ":" ^ string_of_int cnumend ^ ".\n");;
 
+(*Alpha-renaming*)
 let next_reg =
   let n = ref 0 in
   (fun () -> (let temp = !n in n:=!n+1; temp))
@@ -44,6 +50,13 @@ let globenv = Hashtbl.create 10;;
 
 let letenv = Hashtbl.create 10;;
 
+(*OCaml ASTs start with a toplevel strdesc, which is parsed into patterns(values) and expressions. They have information about their
+locations and attributes, and the type of the pattern or expression they are are stored as either a patternDesc or expressionDesc.
+Usually, patterns are seen in matching (either implicit or explicit). From here, there are methods to handle each type of expression or 
+pattern you see. Many of these method names should provide you more context as to what their roles are.*)
+(*The following patterns are implemented: variables, or clauses, constants, wildcards, aliases, tuples (note that Racket does not have a 
+tuple syntax like OCaml does, and therefore it's just defined as an "ocamltuple" struct with one argument, which is the list of arguments), 
+void, and variant/custom types.*)
 let rec patternDescMatcher patterndesc loc =
 	match patterndesc with
 	| Ppat_var {txt = s; loc = loc1;} -> " " ^ (getCurrentName (varConverter s)) ^ " "
@@ -60,6 +73,8 @@ let rec patternDescMatcher patterndesc loc =
 	| Ppat_construct ({txt = Lident typ as lid; loc = newloc;}, opt) -> let typname = longidentMatcher lid loc in 
 		"(" ^ typname ^ " " ^ (typeArgumentMatcher loc opt) ^ ")"
 	| _ -> print_string "Pattern description matcher failed.\n"; locError loc
+(*Unfortunately, Racket has a few keywords and characters that aren't allowed in variable and method names, so
+this method converts the variables to their appropriate name.*)
 and varConverter ?toplvl:(b = false) s = 
 	let s = Str.global_replace (Str.regexp "'") ">tick<" s
 	in let s = Str.global_replace (Str.regexp "|") ">pipe<" s
@@ -73,13 +88,14 @@ and varConverter ?toplvl:(b = false) s =
 	else s
 and getCurrentName s =
 	if (Hashtbl.mem letenv s) then s else if (Hashtbl.mem globenv s) then Hashtbl.find globenv s else s
+(*Handles the argument syntax for conversion OCaml type variants to Racket struct syntax.*)
 and typeArgumentMatcher loc = function
 	| Some {ppat_desc = pdesc; ppat_loc = loc1; ppat_attributes = ppatattr;} ->
 		(match pdesc with 
 		| Ppat_tuple patlist -> List.fold_left (fun str pat -> str ^ " " ^ (patternMatcher pat loc1)) "" patlist
 		| _ -> " " ^ patternDescMatcher pdesc loc1)
-		(*| _ -> print_string "unexpected patternDesc in typeArgumentMatcher"; locError loc)*)
 	| None -> ""
+(*List patterns are converted to Racket's list format.*)
 and listPatternMatcher patterndesc newloc =
 	match patterndesc with
 	| Ppat_construct(_, Some {ppat_desc = pdesc1; ppat_loc = newloc1; ppat_attributes = ppatattr1;}) -> 
@@ -97,6 +113,7 @@ and patternMatcher pattern loc =
 	match pattern with
 	| {ppat_desc = pdesc; ppat_loc = loc1; ppat_attributes = ppatattr;} ->
 		patternDescMatcher pdesc loc1
+(*Handles syntax of match by case and "when" guards for function keywords.*)
 and caseListFunctionMatcher caselist loc = 
 	match caselist with
 	| {pc_lhs = pclhs; pc_guard = pcguard; pc_rhs = pcrhs;}::casetl -> 
@@ -111,6 +128,10 @@ and getEnvCaseList loc = function
 	| {pc_lhs = {ppat_desc = pdesc; ppat_loc = loc1; ppat_attributes = ppatattr;}; pc_guard = pcguard; pc_rhs = pcrhs;}::casetl -> 
 		(getEnv loc pdesc)@(getEnvCaseList loc casetl)
 	| [] -> []
+(*The main expressionDesc matcher. The official OCaml documentation can provide you with the exact syntax of each expression type,
+but the ones currently handled are: anonymous functions, functions, match statements, function names, constants, let statements,
+function applications, tuples, lists, if-else statements, sequential statements, some built-in constructs, assert statements, 
+try-with blocks, variant type constructs, for-loops, and fields.*)
 and expressionDescMatcher expressiondesc loc =
 	match expressiondesc with
 	| Pexp_function caselist -> updateLocEnv letenv (getEnvCaseList loc caselist);
@@ -153,6 +174,7 @@ and expressionDescMatcher expressiondesc loc =
 	| Pexp_field (exp, {txt = l; loc = newloc;}) -> 
 		let s = "field" ^ expressionMatcher exp loc ^ longidentMatcher l loc in funcAdder s; s
 	| _ -> print_string "Expression description matcher failed.\n"; locError loc
+(*Try-with blocks using Racket's with-handlers.*)
 and tryMatcher expressiondesc loc = 
 	match expressiondesc with
 	| Pexp_try (exp, caselist) -> "(with-handlers (" ^ caseListExceptionMatcher caselist loc ^ ") " ^ expressionMatcher exp loc ^ ")"
@@ -161,6 +183,7 @@ and expressionMatcher expression loc  =
 	match expression with
 	| {pexp_desc = expdesc; pexp_loc = loc4; pexp_attributes = pexpattr;} ->
 		expressionDescMatcher expdesc loc4 
+(*List expressions are built by using Scheme's cons syntax.*)
 and listMatcher expressiondesc loc = 
 	match expressiondesc with
 	| Pexp_construct(_, Some e) -> 
@@ -171,6 +194,7 @@ and listMatcher expressiondesc loc =
 		| _ -> print_string "Unexpected tuple error in listMatcher.\n"; locError loc)
 	| Pexp_construct(_, None) -> "(list)"
 	| _ -> expressionDescMatcher expressiondesc loc
+(*Similar to the above, this handles match by case.*)
 and caseListMatcher caselist loc = 
 	match caselist with
 	| {pc_lhs = pclhs; pc_guard = pcguard; pc_rhs = pcrhs;}::casetl -> 
@@ -181,6 +205,7 @@ and caseListMatcher caselist loc =
 		"\n[ " ^ (patternMatcher pclhs loc) ^ pcstring ^ " " ^ (expressionMatcher pcrhs loc) ^ " ] "
 		^ (caseListMatcher casetl loc)
 	| [] -> ""
+(*Matching for type of exception in "with"*)
 and caseListExceptionMatcher caselist loc =
 	match caselist with
 	| {pc_lhs = pclhs; pc_guard = pcguard; pc_rhs = pcrhs;}::casetl -> 
@@ -191,6 +216,7 @@ and caseListExceptionMatcher caselist loc =
 		"\n[ " ^ (patternMatcher pclhs loc) ^ pcstring ^ " (lambda (exn) " ^ (expressionMatcher pcrhs loc) ^ ")] "
 		^ (caseListMatcher casetl loc)
 	| [] -> ""
+(*Determines what type of function the expression is.*)
 and pexpfunMatcher expressiondesc loc =
 	match expressiondesc with
 	| (Pexp_fun (arglabel, expressionopt, pattern, expression)) ->
@@ -208,11 +234,13 @@ and pexpfunMatcher expressiondesc loc =
 				(newvar, expressionDescMatcher (Pexp_match (matchExp, caselist)) loc)
 			| _ -> (arg, (expressionMatcher expression loc )))
 	| _ -> print_string "Incorrect expression description matcher used: fun.\n"; locError loc
+(*Racket uses similar match syntax as OCaml.*)
 and pexpmatchMatcher expressiondesc loc =
 	match expressiondesc with
 	| (Pexp_match (expression, caselist)) ->
 		" (match " ^ (expressionMatcher expression loc) ^ (caseListMatcher caselist loc) ^ ") "
 	| _ -> print_string "Incorrect expression description matcher used: match.\n"; locError loc
+(*Matches and converts(due to Racket's special keywords and characters) identities to their appropriate equivalent.*)
 and longidentMatcher ?toplvl:(b = false) t loc =
 	(match t with 
 	| Lident s -> identConverter b s
@@ -248,6 +276,7 @@ and identConverter b s =
 	else if (Hashtbl.mem globenv s) then 
 		Hashtbl.find globenv s 
 	else s
+(*Conversions of constants.*)
 and constantMatcher const loc = 
 	match const with
 	| Const_int x -> " " ^ (string_of_int x) ^ " "
@@ -261,6 +290,7 @@ and racketFormat s =
 	in let s = Str.global_replace (Str.regexp "'") ">tick<" s
 			in let s = Str.global_replace (Str.regexp "|") ">pipe<" s
 			in Str.global_replace (Str.regexp "\\") "\\\\\\\\" s
+(*Uses Racket's match-let and letrec syntax to determine the appropriate let binding.*)
 and letMatcher letexp loc =
 	match letexp with
 	| Pexp_let(Nonrecursive, valuebindings, exp) -> 
@@ -287,6 +317,7 @@ and letValueBinder valuebindings loc =
 		pvb_loc = loc2;}::valuetl -> let joiner = if (valuetl = []) then "" else "\n" in let exprstr = (expressionMatcher pvbexpr loc2) in
 		"[" ^ (patternMatcher pvbpat loc2) ^ " " ^ exprstr ^ "]" ^ joiner ^ letValueBinder valuetl loc
 	| [] -> ""
+(*Function application matchers and handles the arguments' syntax.*)
 and applyMatcher applyExp loc =
 	let rec argumentEval ls =
 		match ls with
@@ -307,6 +338,7 @@ and applyMatcher applyExp loc =
 	parens ^ id ^ " '" ^ newargs ^ ") ") else
 	parens ^ id ^ " " ^ args
 	| _ -> print_string "Incorrect expression description matcher used: apply.\n"; locError loc
+(*The top-level structure in which we either handle values, evaluations, or types.*)
 and strdescMatcher strdesc loc rackprog = 
 	match strdesc with
 	| Pstr_value(recflag, valuebinding) -> 
@@ -330,6 +362,9 @@ and strdescMatcher strdesc loc rackprog =
 		rackprog := !rackprog ^ structCreations ^
 		(List.fold_left (fun str typ -> (typeDecMatcher typ) ^ "\n" ^ str) "" typedecs)
 	| _ -> print_string "Did not match all of string descriptions.\n"; locError loc
+(*This method and all its associated methods is reponsible for alpha-renaming the variables. The current implementation uses Hashtbls
+to map variables and names to its current "value", where the current value is its current shadowed reference. So, for example, any 
+future use of a variable "var" once it is shadowed will be renamed and treated as a "fresh" variable.*)
 and getEnv loc1 = function
 	| Ppat_var {txt = s; loc = _;} -> [varConverter ~toplvl:true s]
 	| Ppat_or ({ppat_desc = patt1; ppat_loc = _; ppat_attributes = _;}, {ppat_desc = patt2; ppat_loc = _; ppat_attributes = _;}) -> 
@@ -357,6 +392,10 @@ and updateEnv tbl env =
 	| [] -> ()
 and fresh a =
 	let suff = string_of_int (next_reg ()) in a ^ ">SHADOW<" ^ suff
+(*Variant types don't translate over as neatly as the other syntax in OCaml unfortunately. Instead, the current implementation treats
+them as recursive contracts for user-defined structs. There are two parts to a variant type that we include. One is the struct
+definition of all the possible types a recursive type can be. The other part is the recursive contract where we define what the recursive
+type can be as well as the arguments the base types can recieve.*)
 and typeDecMatcher = function
 	| { ptype_name = {txt = name; loc = typloc};
   		ptype_params = typparams;
@@ -373,11 +412,13 @@ and typeDecMatcher = function
   			((Hashtbl.add globenv name name); name))
   		in
   		"(define " ^ newname ^ "/c\n" ^ "(flat-murec-contract " ^ typeKindMatcher newname loc typkind ^ "\n" ^ newname ^ "/c))"
+(*Defines the rescursive type to be one of the base types.*)
 and typeKindMatcher parentName loc = function
 	| Ptype_variant constrdecs -> let orUnifier = ref "" in 
 		let variantTypes = (List.fold_left (fun str typ -> str ^ "\n" ^ (constrDecMatcher orUnifier typ)) "" constrdecs) in
 		"(" ^ variantTypes ^ "\n[" ^ parentName ^ "/c (or/c" ^ !orUnifier ^ ")])"
 	| _ -> print_string "This typekind has not been implemented yet.\n"; locError loc
+(*Defines the contract for the base types.*)
 and constrDecMatcher orUnifier = function
 	| {pcd_name = {txt = name; loc = newloc;}; pcd_args = args; pcd_res = res; pcd_loc = loc; pcd_attributes = attrs;} ->
 		let name = Hashtbl.find globenv name in
@@ -393,6 +434,7 @@ and racketTypeMapper s =
 	| "int" -> "integer?"
 	| "string" -> "string?"
 	| _ -> (Hashtbl.find globenv s) ^ "/c")
+(*This handles the first part mentioned earlier: the struct definitions.*)
 and structCreator = function
 	{ ptype_name = {txt = name; loc = typloc};
   		ptype_params = typparams;
@@ -419,6 +461,7 @@ and structArgumentCreator nextRegFunc = function
 		(match truecore with
 		| Ptyp_constr ({txt = Lident s; loc = newloc;}, []) -> "e" ^ (string_of_int (nextRegFunc ()))
 		| _ -> print_string "This core_type_desc hasn't been implemented yet for structs.\n"; locError loc)
+(*Top-level*)
 and toRacket ast rackprog = 
 	match ast with
 	| {pstr_desc = strdesc; pstr_loc = loc1;}::asttl ->
@@ -431,6 +474,7 @@ Hashtbl.add globenv "list" "list";;
 Hashtbl.add globenv ">pipe<>" ">pipe<>";;
 let z = (ref "");;
 toRacket (read_sig Sys.argv.(1)) z;;
+(*The following are translations of OCaml library functions into Racket match-lambda format (for currying purposes)*)
 z := 
 "(define (count-format-string-args s)
   (count (curry equal? #\\~) (string->list s)))
@@ -575,9 +619,13 @@ z :=
 (define atanf (match-lambda [x (if (flonum? x) (atan x) (error `ExpectedFlonum))]))
 (define acosf (match-lambda [x (if (flonum? x) (acos x) (error `ExpectedFlonum))]))
 (define asinf (match-lambda [x (if (flonum? x) (asin x) (error `ExpectedFlonum))]))\n" ^ !z;;
-z := "#lang racket\n" ^ !z;;(*
-let outputstr = "./translated/" ^ (Str.global_replace (Str.regexp ".ml") ".rkt" Sys.argv.(1)) in
-output_string (open_out outputstr) !z;;*)print_string !z;;
+z := "#lang racket\n" ^ !z;; 
+
+print_string !z;;
+
+(*I'm including the following comments as you may or may not find it useful. Essentially, these are 
+some syntax definitions I played around with to allow shadowing in the translated racket program. Instead of
+shadowing, the program currently uses alpha-renaming to accomplish the same effect.*)
 
 (*(require 
   (rename-in racket/base [define define-original]) 
