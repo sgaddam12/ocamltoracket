@@ -1,4 +1,0 @@
-#lang racket
-(provide (contract-out [plus (-> number? number? number)]))
-
-(define (plus a b) (+ a b))
